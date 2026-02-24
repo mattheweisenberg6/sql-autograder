@@ -12,3 +12,6 @@ matplotlib>=3.7.0
 
 # Ollama support (HTTP requests)
 requests>=2.28.0
+
+# OpenAi 
+openai>=1.0.0  

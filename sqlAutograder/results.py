@@ -90,8 +90,11 @@ class ResultsProcessor:
         }
         
         for q_num in questions:
-            q_key = f'question_{q_num.replace(".", "_")}'
-            q_result = llm_result.get(q_key, {})
+            # Support both key formats: question_4_1 (underscore) and question_4.1 (dot)
+            # Some models (e.g. mistral) return dot notation despite prompt instructions
+            q_key_underscore = f'question_{q_num.replace(".", "_")}' 
+            q_key_dot = f'question_{q_num}'
+            q_result = llm_result.get(q_key_underscore) or llm_result.get(q_key_dot) or {}
             
             # Get scores
             llm_score = q_result.get('score', 0.0)

@@ -12,8 +12,10 @@ from sqlAutograder import (
     get_gemini_config,
     get_grading_config,
     get_ollama_config,
+    get_openai_config,
     GeminiGrader,
     OllamaGrader,
+    OpenAIGrader,
     SubmissionLoader,
     ResultsProcessor,
     GradingStatistics,
@@ -26,15 +28,24 @@ def get_grader(model: str):
     Get the appropriate grader based on model selection.
     
     Args:
-        model: Model identifier ('gemini' or an Ollama model name)
+        model: Model identifier ('gemini', OpenAI model name, or Ollama model name)
         
     Returns:
         Tuple of (grader instance, model display name)
     """
-    if model == 'gemini':
+    # OpenAI models
+    if model in ['gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo']:
+        config = get_openai_config(model_name=model)
+        grader = OpenAIGrader(config)
+        return grader, f"OpenAI ({model})"
+    
+    # Gemini model
+    elif model == 'gemini':
         config = get_gemini_config()
         grader = GeminiGrader(config)
         return grader, f"Gemini ({config.model_name})"
+    
+    # Ollama models (everything else)
     else:
         config = get_ollama_config(model_name=model)
         grader = OllamaGrader(config)
@@ -56,13 +67,17 @@ def grade_submissions(
         output_csv: Path to save grading results (default: output/<model>/grading_results.csv)
         max_students: Maximum number of students to grade (None for all)
         rate_limit_delay: Delay between API calls in seconds
-        model: Model to use ('gemini' or Ollama model name like 'deepseek-r1/llama3.1:8b')
+        model: Model to use ('gemini', OpenAI model, or Ollama model name)
         
     Returns:
         bool: True if successful
     """
     # Create output directory organized by model name
-    model_suffix = model.replace(':', '-').replace('.', '-')
+    if model in ['gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo']:
+        model_suffix = f"openai-{model.replace('.', '-')}"
+    else:
+        model_suffix = model.replace(':', '-').replace('.', '-')
+    
     output_dir = Path("output") / model_suffix
     output_dir.mkdir(parents=True, exist_ok=True)
     
@@ -110,7 +125,7 @@ def grade_submissions(
     # Initialize grader
     print(f"3. Initializing {model_display} grader...")
     print("   ✓ Grader initialized")
-    if model != 'gemini':
+    if model not in ['gemini', 'gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo']:
         print("   ⚠ Note: Local models may be slower than API calls")
     print()
     
@@ -347,6 +362,18 @@ Examples:
   # Grade all submissions with Gemini (default)
   python main.py grade exam1-submission.csv
   
+  # Grade with OpenAI GPT-4.1-mini (recommended)
+  python main.py grade exam1-submission.csv --model gpt-4.1-mini
+  
+  # Grade with OpenAI GPT-4.1
+  python main.py grade exam1-submission.csv --model gpt-4.1
+
+  # Grade with OpenAI GPT-4o-mini
+  python main.py grade exam1-submission.csv --model gpt-4o-mini
+  
+  # Grade with OpenAI GPT-4o
+  python main.py grade exam1-submission.csv --model gpt-4o
+  
   # Grade with DeepSeek-R1 (local Ollama model)
   python main.py grade exam1-submission.csv --model deepseek-r1
   
@@ -354,16 +381,16 @@ Examples:
   python main.py grade exam1-submission.csv --model llama3.1:8b
   
   # Generate overall statistics
-  python main.py stats output/llama3-1-8b/grading_results.csv
+  python main.py stats output/openai-gpt-4-1-mini/grading_results.csv
   
   # Generate per-grader statistics
-  python main.py grader-stats output/llama3-1-8b/grading_results.csv
+  python main.py grader-stats output/openai-gpt-4-1-mini/grading_results.csv
   
   # Generate visualizations
-  python main.py visualize output/llama3-1-8b/grading_results.csv
+  python main.py visualize output/openai-gpt-4-1-mini/grading_results.csv
   
   # Grade first 50 submissions
-  python main.py grade exam1-submission.csv --max-students 50
+  python main.py grade exam1-submission.csv --max-students 50 --model gpt-4.1-mini
 
 Output Structure:
   output/
@@ -374,6 +401,10 @@ Output Structure:
   │   ├── overall_distribution_gemini.png
   │   ├── G1_distribution_gemini.png
   │   └── ...
+  ├── openai-gpt-4-1-mini/
+  │   └── ...
+  ├── openai-gpt-4o-mini/
+  │   └── ...
   ├── llama3-1-8b/
   │   └── ...
   └── deepseek-r1/
@@ -381,14 +412,22 @@ Output Structure:
 
 Environment Variables:
   GEMINI_API_KEY          Your Google Gemini API key (required for Gemini model)
+  OPENAI_API_KEY          Your OpenAI API key (required for OpenAI models)
+
+OpenAI Setup:
+  1. Get API key from https://platform.openai.com/api-keys
+  2. Set environment variable:
+     export OPENAI_API_KEY='your-api-key-here'
 
 Ollama Setup (for local models):
   brew install ollama
   ollama serve
   ollama pull llama3.1:8b
 
-Available Ollama Models:
-  deepseek-r1, llama3.1:8b, llama3.2:3b
+Available Models:
+  OpenAI:  gpt-4.1-mini (recommended), gpt-4.1, gpt-4o-mini, gpt-4o, gpt-4-turbo, gpt-3.5-turbo
+  Gemini:  gemini (uses gemini-2.5-flash)
+  Ollama:  deepseek-r1, llama3.1:8b, llama3.2:3b, mistral, qwen2.5:7b
         """
     )
     
@@ -415,7 +454,7 @@ Available Ollama Models:
     grade_parser.add_argument(
         '--model',
         default='gemini',
-        help='Model to use: "gemini" or Ollama model name like "deepseek-r1" (default: gemini)'
+        help='Model to use: "gemini", OpenAI model (e.g., "gpt-4o-mini"), or Ollama model (e.g., "llama3.1:8b") (default: gemini)'
     )
     
     # Stats command

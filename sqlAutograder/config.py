@@ -16,16 +16,30 @@ class GeminiConfig:
     max_retries: int = 3
     retry_delay: float = 2.0
 
+
 @dataclass
 class OllamaConfig:
     """Configuration for Ollama local models."""
     model_name: str = "llama3.1:8b"
     base_url: str = "http://localhost:11434"
     temperature: float = 0.0
+    max_tokens: int = 8192
+    max_retries: int = 3
+    retry_delay: float = 2.0
+    timeout: float = 300.0
+
+
+@dataclass
+class OpenAIConfig:
+    """Configuration for OpenAI API."""
+    api_key: str
+    model_name: str = "gpt-4o-mini"
+    temperature: float = 0.0
     max_tokens: int = 4096
     max_retries: int = 3
     retry_delay: float = 2.0
-    timeout: float = 300.0 
+    timeout: float = 60.0
+
 
 @dataclass
 class GradingConfig:
@@ -56,6 +70,7 @@ def get_gemini_config() -> GeminiConfig:
     
     return GeminiConfig(api_key=api_key)
 
+
 def get_ollama_config(model_name: str = "llama3.1:8b") -> OllamaConfig:
     """
     Get Ollama configuration for local models.
@@ -68,6 +83,32 @@ def get_ollama_config(model_name: str = "llama3.1:8b") -> OllamaConfig:
     """
     return OllamaConfig(model_name=model_name)
 
+
+def get_openai_config(model_name: str = "gpt-4o-mini") -> OpenAIConfig:
+    """
+    Get OpenAI API configuration from environment variables.
+    
+    Args:
+        model_name: Name of the OpenAI model to use (default: gpt-4o-mini)
+                   Options: gpt-4o-mini, gpt-4o, gpt-4-turbo, gpt-3.5-turbo
+        
+    Returns:
+        OpenAIConfig: Configuration object with API settings
+        
+    Raises:
+        ValueError: If OPENAI_API_KEY environment variable is not set
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    
+    if not api_key:
+        raise ValueError(
+            "OPENAI_API_KEY environment variable not set. "
+            "Please set it using: export OPENAI_API_KEY='your-api-key'"
+        )
+    
+    return OpenAIConfig(api_key=api_key, model_name=model_name)
+
+
 def get_grading_config() -> GradingConfig:
     """
     Get grading configuration.
@@ -79,8 +120,6 @@ def get_grading_config() -> GradingConfig:
     If your CSV has different column names, update them here.
     
     Expected CSV columns:
-    - 'Student ID'
-    - 'Name'
     - 'Question 4.1 Response' (SQL query)
     - 'Question 4.1 Score' (human grader score)
     - 'Question 4.2 Response' (SQL query)

@@ -100,11 +100,10 @@ class GradingStatistics:
         total_llm = self.valid_df['total_llm_score']
         total_human = self.valid_df['total_grader_score']
         total_diff = self.valid_df['total_score_difference']
-        
-        # Calculate agreement (within 0.5 points)
+
         exact_matches = len(total_diff[abs(total_diff) < 0.5])
         agreement_rate = (exact_matches / len(self.valid_df)) * 100
-        
+
         # Question-level agreement
         questions = ['4.1', '4.2', '4.3', '4.4', '4.5']
         question_agreement = {}
