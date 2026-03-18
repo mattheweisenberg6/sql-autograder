@@ -35,10 +35,14 @@ class OpenAIConfig:
     api_key: str
     model_name: str = "gpt-4o-mini"
     temperature: float = 0.0
-    max_tokens: int = 4096
+    max_tokens: int = 600        # grading responses are ~250 tokens
     max_retries: int = 3
-    retry_delay: float = 2.0
-    timeout: float = 60.0
+    retry_delay: float = 0.5     # reduced from 2.0s
+    timeout: float = 60.0        # reasoning models (o4-mini, o3-mini) need more time
+    is_reasoning_model: bool = False  # True for o-series: skips temperature, uses max_completion_tokens
+
+# Models that use reasoning (o-series) — temperature not supported, slower responses
+_REASONING_MODELS = frozenset({"o1", "o1-mini", "o3", "o3-mini", "o4-mini"})
 
 
 @dataclass
@@ -87,26 +91,33 @@ def get_ollama_config(model_name: str = "llama3.1:8b") -> OllamaConfig:
 def get_openai_config(model_name: str = "gpt-4o-mini") -> OpenAIConfig:
     """
     Get OpenAI API configuration from environment variables.
-    
+
     Args:
-        model_name: Name of the OpenAI model to use (default: gpt-4o-mini)
-                   Options: gpt-4o-mini, gpt-4o, gpt-4-turbo, gpt-3.5-turbo
-        
+        model_name: Model to use. Standard: gpt-4o-mini, gpt-4o, gpt-4-turbo, gpt-3.5-turbo
+                    Reasoning: o4-mini (recommended), o3-mini, o3, o1-mini, o1
+
     Returns:
         OpenAIConfig: Configuration object with API settings
-        
+
     Raises:
         ValueError: If OPENAI_API_KEY environment variable is not set
     """
     api_key = os.getenv("OPENAI_API_KEY")
-    
+
     if not api_key:
         raise ValueError(
             "OPENAI_API_KEY environment variable not set. "
             "Please set it using: export OPENAI_API_KEY='your-api-key'"
         )
-    
-    return OpenAIConfig(api_key=api_key, model_name=model_name)
+
+    is_reasoning = model_name in _REASONING_MODELS
+    return OpenAIConfig(
+        api_key=api_key,
+        model_name=model_name,
+        is_reasoning_model=is_reasoning,
+        # Reasoning models are slower — give them more time
+        timeout=120.0 if is_reasoning else 60.0,
+    )
 
 
 def get_grading_config() -> GradingConfig:

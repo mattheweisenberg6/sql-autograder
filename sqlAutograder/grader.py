@@ -1,128 +1,130 @@
 """
 LLM-based grading module using Google Gemini API.
+
+v1.4: Migrated from deprecated google.generativeai to google.genai SDK.
+v1.3 performance optimisations:
+  - Uses create_grading_prompt_full() — leaner combined prompt (~1,250 tokens, was ~3,800)
+  - max_output_tokens capped at 600
+  - retry_delay reduced from 2.0s → 0.5s
+  - grade_batch() runs N students concurrently via ThreadPoolExecutor
 """
 
 import json
 import time
-from typing import Dict, Optional, Tuple
-import google.generativeai as genai
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List, Optional, Tuple
+from google import genai
+from google.genai import types
 
 from .config import GeminiConfig
-from .prompts import create_grading_prompt
+from .prompts import create_grading_prompt_full
 
 
 class GeminiGrader:
     """Handles LLM-based grading using Google Gemini API."""
-    
+
     def __init__(self, config: GeminiConfig):
-        """
-        Initialize the Gemini grader.
-        
-        Args:
-            config: Gemini API configuration
-        """
         self.config = config
-        genai.configure(api_key=config.api_key)
-        self.model = genai.GenerativeModel(config.model_name)
-        self.generation_config = genai.types.GenerationConfig(
-            temperature=config.temperature
-        )
-    
+        self.client = genai.Client(api_key=config.api_key)
+
     def grade_student_submission(
-        self, 
-        student_queries: Dict[str, str]
+        self,
+        student_queries: Dict[str, str],
     ) -> Tuple[Optional[Dict], Optional[str]]:
         """
-        Grade a student's submission for all questions.
-        
-        Args:
-            student_queries: Dictionary mapping question numbers to SQL queries
-            
+        Grade a single student's submission.
+
         Returns:
             Tuple of (grading_result, error_message)
-            - grading_result: Dictionary with scores and feedback if successful
-            - error_message: Error description if grading failed
         """
-        prompt = create_grading_prompt(student_queries)
-        
+        # Use full prompt (context + student queries) — Gemini has no separate system turn
+        prompt = create_grading_prompt_full(student_queries)
+
         for attempt in range(self.config.max_retries):
             try:
-                response = self.model.generate_content(
-                    prompt,
-                    generation_config=self.generation_config
+                response = self.client.models.generate_content(
+                    model=self.config.model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=self.config.temperature,
+                        max_output_tokens=600,
+                    ),
                 )
-                
-                result = self._parse_response(response.text)
-                return result, None
-                
+                return self._parse_response(response.text), None
+
             except json.JSONDecodeError as e:
-                error_msg = f"JSON parsing error on attempt {attempt + 1}: {str(e)}"
+                error_msg = f"JSON parsing error on attempt {attempt + 1}: {e}"
                 if attempt < self.config.max_retries - 1:
-                    time.sleep(self.config.retry_delay)
+                    time.sleep(0.5)
                 else:
                     return None, error_msg
-                    
+
             except Exception as e:
-                error_msg = f"Grading error on attempt {attempt + 1}: {str(e)}"
+                error_msg = f"Grading error on attempt {attempt + 1}: {e}"
                 if attempt < self.config.max_retries - 1:
-                    time.sleep(self.config.retry_delay)
+                    time.sleep(0.5)
                 else:
                     return None, error_msg
-        
+
         return None, "Max retries exceeded"
-    
-    def _parse_response(self, response_text: str) -> Dict:
+
+    def grade_batch(
+        self,
+        submissions: List[Tuple[str, Dict[str, str]]],
+        max_workers: int = 5,
+    ) -> Dict[str, Tuple[Optional[Dict], Optional[str]]]:
         """
-        Parse and clean the LLM response.
-        
+        Grade multiple students concurrently.
+
         Args:
-            response_text: Raw response text from LLM
-            
+            submissions: List of (student_id, queries_dict) tuples
+            max_workers: Max concurrent API calls (default 5)
+
         Returns:
-            Dictionary with parsed grading results
-            
-        Raises:
-            json.JSONDecodeError: If response is not valid JSON
+            Dict mapping student_id → (grading_result, error_message)
         """
-        # Clean markdown code blocks if present
-        cleaned_text = response_text.strip()
-        
-        if cleaned_text.startswith("```json"):
-            cleaned_text = cleaned_text[7:]
-        elif cleaned_text.startswith("```"):
-            cleaned_text = cleaned_text[3:]
-            
-        if cleaned_text.endswith("```"):
-            cleaned_text = cleaned_text[:-3]
-        
-        cleaned_text = cleaned_text.strip()
-        
-        return json.loads(cleaned_text)
-    
+        results = {}
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_id = {
+                executor.submit(self.grade_student_submission, queries): student_id
+                for student_id, queries in submissions
+            }
+            for future in as_completed(future_to_id):
+                student_id = future_to_id[future]
+                try:
+                    results[student_id] = future.result()
+                except Exception as e:
+                    results[student_id] = (None, str(e))
+
+        return results
+
+    def _parse_response(self, response_text: str) -> Dict:
+        """Parse and clean the LLM response."""
+        cleaned = response_text.strip()
+
+        if cleaned.startswith("```json"):
+            cleaned = cleaned[7:]
+        elif cleaned.startswith("```"):
+            cleaned = cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+
+        cleaned = cleaned.strip()
+        return json.loads(cleaned)
+
     @staticmethod
     def create_failed_result(
-        question_numbers: list[str],
-        error_message: str = "Grading failed"
+        question_numbers: List[str],
+        error_message: str = "Grading failed",
     ) -> Dict:
-        """
-        Create a result dictionary for failed grading attempts.
-        
-        Args:
-            question_numbers: List of question numbers
-            error_message: Error description
-            
-        Returns:
-            Dictionary with -1 scores and error information
-        """
         result = {}
-        
         for q_num in question_numbers:
             q_key = f'question_{q_num.replace(".", "_")}'
             result[q_key] = {
                 'score': -1,
                 'deduction_details': error_message,
                 'feedback': 'Automatic grading failed - requires manual review',
-                'needs_review': True
+                'needs_review': True,
             }
-        
         return result

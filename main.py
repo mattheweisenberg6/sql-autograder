@@ -19,7 +19,8 @@ from sqlAutograder import (
     SubmissionLoader,
     ResultsProcessor,
     GradingStatistics,
-    GradingVisualizer
+    GradingVisualizer,
+    ScoreCalibrator,
 )
 
 
@@ -34,7 +35,7 @@ def get_grader(model: str):
         Tuple of (grader instance, model display name)
     """
     # OpenAI models
-    if model in ['gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo']:
+    if model in ['o4-mini', 'o3-mini', 'o3', 'o1-mini', 'o1', 'gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo']:
         config = get_openai_config(model_name=model)
         grader = OpenAIGrader(config)
         return grader, f"OpenAI ({model})"
@@ -56,24 +57,28 @@ def grade_submissions(
     input_csv: str,
     output_csv: str = None,
     max_students: int = None,
-    rate_limit_delay: float = 1.0,
-    model: str = 'gemini'
+    rate_limit_delay: float = 0.0,
+    model: str = 'gemini',
+    calibration: bool = True,
+    concurrent_workers: int = 5,
 ) -> bool:
     """
     Grade student submissions and save results.
-    
+
     Args:
         input_csv: Path to input CSV with submissions
         output_csv: Path to save grading results (default: output/<model>/grading_results.csv)
         max_students: Maximum number of students to grade (None for all)
-        rate_limit_delay: Delay between API calls in seconds
+        rate_limit_delay: Delay between batches in seconds (default 0 — not needed with low workers)
         model: Model to use ('gemini', OpenAI model, or Ollama model name)
-        
+        calibration: Apply post-processing grade curve to correct LLM strictness bias
+        concurrent_workers: Number of parallel API calls (default 5, use 1 to disable)
+
     Returns:
         bool: True if successful
     """
     # Create output directory organized by model name
-    if model in ['gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo']:
+    if model in ['o4-mini', 'o3-mini', 'o3', 'o1-mini', 'o1', 'gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo']:
         model_suffix = f"openai-{model.replace('.', '-')}"
     else:
         model_suffix = model.replace(':', '-').replace('.', '-')
@@ -98,6 +103,14 @@ def grade_submissions(
         grader, model_display = get_grader(model)
         
         print(f"   ✓ Using model: {model_display}")
+        
+        # Initialize calibrator
+        calibrator = ScoreCalibrator(mode="curve") if calibration else ScoreCalibrator(mode="none")
+        if calibration:
+            print(f"   ✓ Grade calibration: ENABLED (curve mode, 80% bias correction)")
+        else:
+            print(f"   ⚠ Grade calibration: DISABLED (raw LLM scores will be used)")
+        print(f"   ✓ Concurrent workers: {concurrent_workers}")
         print()
     except ValueError as e:
         print(f"   ✗ Configuration error: {e}")
@@ -125,7 +138,7 @@ def grade_submissions(
     # Initialize grader
     print(f"3. Initializing {model_display} grader...")
     print("   ✓ Grader initialized")
-    if model not in ['gemini', 'gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo']:
+    if model not in ['gemini', 'o4-mini', 'o3-mini', 'o3', 'o1-mini', 'o1', 'gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo']:
         print("   ⚠ Note: Local models may be slower than API calls")
     print()
     
@@ -140,64 +153,114 @@ def grade_submissions(
     success_count = 0
     fail_count = 0
     start_time = time.time()
-    
-    for i, submission in enumerate(submissions, 1):
-        print(f"--- Student {i}/{total} ---")
+
+    # Build a lookup so we can access submission details by student_id
+    submission_map = {sub.student_id: sub for sub in submissions}
+    completed_count = 0
+
+    def _print_student_result(submission, llm_result, error, elapsed):
+        """Print a single student's grading result immediately."""
+        nonlocal success_count, fail_count, completed_count
+        completed_count += 1
+
+        print(f"--- Student {completed_count}/{total} ---")
         print(f"Name: {submission.student_name}")
         print(f"ID: {submission.student_id}")
-        
-        # Display grader scores
+
         for q_num in grading_config.questions:
             score = submission.grader_scores[q_num]
             print(f"Q{q_num} Grader Score: {score}/10")
-        
-        # Grade with LLM
-        student_start = time.time()
-        llm_result, error = grader.grade_student_submission(submission.queries)
-        student_time = time.time() - student_start
-        
+
         if llm_result:
-            # Successful grading
             result = ResultsProcessor.create_result_from_grading(
                 submission.student_id,
                 submission.student_name,
                 submission.queries,
                 submission.grader_scores,
                 llm_result,
-                grading_config.questions
+                grading_config.questions,
+                calibrator=calibrator,
             )
-            
-            # Display LLM scores
+
             for q_num in grading_config.questions:
                 q_prefix = f'q{q_num.replace(".", "_")}'
                 llm_score = getattr(result, f'{q_prefix}_llm_score')
+                raw_score = getattr(result, f'{q_prefix}_raw_llm_score')
                 diff = getattr(result, f'{q_prefix}_score_difference')
-                print(f"  Q{q_num}: LLM={llm_score:.1f}/10, Diff={diff:+.1f}")
-            
-            print(f"  Total: LLM={result.total_llm_score:.1f}/50, "
-                  f"Grader={result.total_grader_score}/50, "
-                  f"Diff={result.total_score_difference:+.1f}")
-            print(f"  Time: {student_time:.1f}s")
-            
+                if calibration and raw_score != llm_score:
+                    print(f"  Q{q_num}: LLM={llm_score}/10 (raw={raw_score}), Diff={diff:+d}")
+                else:
+                    print(f"  Q{q_num}: LLM={llm_score}/10, Diff={diff:+d}")
+
+            raw_total = result.total_raw_llm_score
+            cal_total = result.total_llm_score
+            if calibration and raw_total != cal_total:
+                print(f"  Total: LLM={cal_total}/50 (raw={raw_total}), "
+                      f"Grader={result.total_grader_score}/50, "
+                      f"Diff={result.total_score_difference:+d}")
+            else:
+                print(f"  Total: LLM={cal_total}/50, "
+                      f"Grader={result.total_grader_score}/50, "
+                      f"Diff={result.total_score_difference:+d}")
+            print(f"  Time: {elapsed:.1f}s")
             success_count += 1
         else:
-            # Failed grading
             print(f"  ✗ Grading failed: {error}")
             result = ResultsProcessor.create_failed_result(
                 submission.student_id,
                 submission.student_name,
                 submission.queries,
                 submission.grader_scores,
-                grading_config.questions
+                grading_config.questions,
             )
             fail_count += 1
-        
-        results.append(result)
+
         print()
-        
-        # Rate limiting
-        if i < total:
-            time.sleep(rate_limit_delay)
+        return result
+
+    if concurrent_workers > 1:
+        # Concurrent mode: print each student as soon as their API call completes
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        print(f"   Running {concurrent_workers} concurrent API calls — results print as each completes.")
+        print()
+
+        # results_map preserves final ordering for CSV output
+        results_map = {}
+
+        with ThreadPoolExecutor(max_workers=concurrent_workers) as executor:
+            future_to_sub = {
+                executor.submit(grader.grade_student_submission, sub.queries): sub
+                for sub in submissions
+            }
+            for future in as_completed(future_to_sub):
+                sub = future_to_sub[future]
+                t_start = time.time()
+                try:
+                    llm_result, error = future.result()
+                except Exception as e:
+                    llm_result, error = None, str(e)
+                elapsed = time.time() - t_start
+
+                result = _print_student_result(sub, llm_result, error, elapsed)
+                results_map[sub.student_id] = result
+
+        # Restore original submission order for CSV
+        results = [results_map[sub.student_id] for sub in submissions]
+
+    else:
+        # Sequential mode: grade and print one at a time
+        print()
+        for submission in submissions:
+            t_start = time.time()
+            llm_result, error = grader.grade_student_submission(submission.queries)
+            elapsed = time.time() - t_start
+
+            result = _print_student_result(submission, llm_result, error, elapsed)
+            results.append(result)
+
+            if rate_limit_delay > 0:
+                time.sleep(rate_limit_delay)
     
     total_time = time.time() - start_time
     
@@ -219,6 +282,7 @@ def grade_submissions(
     print("GRADING SUMMARY")
     print("=" * 60)
     print(f"Model: {model_display}")
+    print(f"Calibration: {'ENABLED (curve mode)' if calibration else 'DISABLED'}")
     print(f"Total students: {total}")
     print(f"Successfully graded: {success_count}")
     print(f"Failed: {fail_count}")
@@ -362,15 +426,15 @@ Examples:
   # Grade all submissions with Gemini (default)
   python main.py grade exam1-submission.csv
   
-  # Grade with OpenAI GPT-4.1-mini (recommended)
-  python main.py grade exam1-submission.csv --model gpt-4.1-mini
-  
-  # Grade with OpenAI GPT-4.1
-  python main.py grade exam1-submission.csv --model gpt-4.1
+  # Grade with OpenAI o4-mini (recommended — reasoning model)
+  python main.py grade exam1-submission.csv --model o4-mini
 
-  # Grade with OpenAI GPT-4o-mini
-  python main.py grade exam1-submission.csv --model gpt-4o-mini
-  
+  # Grade with OpenAI o3-mini (previous reasoning model)
+  python main.py grade exam1-submission.csv --model o3-mini
+
+  # Grade with OpenAI GPT-4.1-mini (fast, non-reasoning)
+  python main.py grade exam1-submission.csv --model gpt-4.1-mini
+
   # Grade with OpenAI GPT-4o
   python main.py grade exam1-submission.csv --model gpt-4o
   
@@ -425,7 +489,7 @@ Ollama Setup (for local models):
   ollama pull llama3.1:8b
 
 Available Models:
-  OpenAI:  gpt-4.1-mini (recommended), gpt-4.1, gpt-4o-mini, gpt-4o, gpt-4-turbo, gpt-3.5-turbo
+  OpenAI:  o4-mini (recommended, reasoning), o3-mini, o3, gpt-4.1-mini, gpt-4.1, gpt-4o-mini, gpt-4o
   Gemini:  gemini (uses gemini-2.5-flash)
   Ollama:  deepseek-r1, llama3.1:8b, llama3.2:3b, mistral, qwen2.5:7b
         """
@@ -448,13 +512,25 @@ Available Models:
     grade_parser.add_argument(
         '--rate-limit',
         type=float,
-        default=1.0,
-        help='Delay between API calls in seconds (default: 1.0)'
+        default=0.0,
+        help='Delay between sequential API calls in seconds (default: 0 — not needed with concurrent mode)'
     )
     grade_parser.add_argument(
         '--model',
         default='gemini',
         help='Model to use: "gemini", OpenAI model (e.g., "gpt-4o-mini"), or Ollama model (e.g., "llama3.1:8b") (default: gemini)'
+    )
+    grade_parser.add_argument(
+        '--workers',
+        type=int,
+        default=5,
+        help='Number of concurrent API calls (default: 5; use 1 to disable concurrency)'
+    )
+    grade_parser.add_argument(
+        '--no-calibration',
+        action='store_true',
+        default=False,
+        help='Disable post-processing grade curve calibration (use raw LLM scores)'
     )
     
     # Stats command
@@ -488,7 +564,9 @@ Available Models:
             args.output,
             args.max_students,
             args.rate_limit,
-            args.model
+            args.model,
+            calibration=not args.no_calibration,
+            concurrent_workers=args.workers,
         )
         exit(0 if success else 1)
     

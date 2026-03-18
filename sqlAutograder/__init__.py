@@ -10,8 +10,9 @@ from .data_loader import SubmissionLoader
 from .results import ResultsProcessor
 from .statistics import GradingStatistics
 from .visualizations import GradingVisualizer
+from .calibration import ScoreCalibrator
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 __all__ = [
     'get_gemini_config',
@@ -24,5 +25,6 @@ __all__ = [
     'SubmissionLoader',
     'ResultsProcessor',
     'GradingStatistics',
-    'GradingVisualizer'
+    'GradingVisualizer',
+    'ScoreCalibrator',
 ]
