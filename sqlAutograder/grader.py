@@ -47,12 +47,16 @@ class GeminiGrader:
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         temperature=self.config.temperature,
-                        max_output_tokens=600,
+                        max_output_tokens=1500,
+                        thinking_config=types.ThinkingConfig(thinking_budget=0),
                     ),
                 )
                 return self._parse_response(response.text), None
 
             except json.JSONDecodeError as e:
+                print(f"\n[DEBUG] Attempt {attempt + 1} — raw response ({len(response.text)} chars):")
+                print(repr(response.text[:500]))
+                print()
                 error_msg = f"JSON parsing error on attempt {attempt + 1}: {e}"
                 if attempt < self.config.max_retries - 1:
                     time.sleep(0.5)
