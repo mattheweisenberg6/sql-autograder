@@ -13,9 +13,11 @@ from sqlAutograder import (
     get_grading_config,
     get_ollama_config,
     get_openai_config,
+    get_claude_config,
     GeminiGrader,
     OllamaGrader,
     OpenAIGrader,
+    ClaudeGrader,
     SubmissionLoader,
     ResultsProcessor,
     GradingStatistics,
@@ -24,33 +26,57 @@ from sqlAutograder import (
 )
 
 
+_OPENAI_MODELS = frozenset([
+    'o4-mini', 'o3-mini', 'o3', 'o1-mini', 'o1',
+    'gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo',
+])
+_CLAUDE_MODELS = frozenset([
+    'claude-sonnet-4-6', 'claude-opus-4-6', 'claude-haiku-4-5-20251001',
+    # legacy aliases for convenience
+    'claude-sonnet', 'claude-opus', 'claude-haiku',
+])
+_CLAUDE_ALIASES = {
+    'claude-sonnet': 'claude-sonnet-4-6',
+    'claude-opus':   'claude-opus-4-6',
+    'claude-haiku':  'claude-haiku-4-5-20251001',
+}
+
+
 def get_grader(model: str):
     """
     Get the appropriate grader based on model selection.
-    
+
     Args:
-        model: Model identifier ('gemini', OpenAI model name, or Ollama model name)
-        
+        model: Model identifier ('gemini', Claude model name, OpenAI model name, or Ollama model name)
+
     Returns:
         Tuple of (grader instance, model display name)
     """
+    # Resolve short aliases (claude-sonnet → claude-sonnet-4-6, etc.)
+    model = _CLAUDE_ALIASES.get(model, model)
+
+    # Claude models
+    if model in _CLAUDE_MODELS:
+        config = get_claude_config(model_name=model)
+        grader = ClaudeGrader(config)
+        return grader, f"Claude ({model})"
+
     # OpenAI models
-    if model in ['o4-mini', 'o3-mini', 'o3', 'o1-mini', 'o1', 'gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo']:
+    if model in _OPENAI_MODELS:
         config = get_openai_config(model_name=model)
         grader = OpenAIGrader(config)
         return grader, f"OpenAI ({model})"
-    
+
     # Gemini model
-    elif model == 'gemini':
+    if model == 'gemini':
         config = get_gemini_config()
         grader = GeminiGrader(config)
         return grader, f"Gemini ({config.model_name})"
-    
+
     # Ollama models (everything else)
-    else:
-        config = get_ollama_config(model_name=model)
-        grader = OllamaGrader(config)
-        return grader, f"Ollama ({model})"
+    config = get_ollama_config(model_name=model)
+    grader = OllamaGrader(config)
+    return grader, f"Ollama ({model})"
 
 
 def grade_submissions(
@@ -78,8 +104,11 @@ def grade_submissions(
         bool: True if successful
     """
     # Create output directory organized by model name
-    if model in ['o4-mini', 'o3-mini', 'o3', 'o1-mini', 'o1', 'gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo']:
+    model = _CLAUDE_ALIASES.get(model, model)  # resolve aliases before suffix
+    if model in _OPENAI_MODELS:
         model_suffix = f"openai-{model.replace('.', '-')}"
+    elif model in _CLAUDE_MODELS:
+        model_suffix = f"claude-{model.replace('.', '-').replace(':', '-')}"
     else:
         model_suffix = model.replace(':', '-').replace('.', '-')
     
@@ -101,7 +130,11 @@ def grade_submissions(
         
         # Initialize the appropriate grader based on model selection
         grader, model_display = get_grader(model)
-        
+
+        # Use the grader's recommended worker count unless the user explicitly passed --workers
+        if concurrent_workers == 5 and hasattr(grader.config, 'default_workers'):
+            concurrent_workers = grader.config.default_workers
+
         print(f"   ✓ Using model: {model_display}")
         
         # Initialize calibrator
@@ -138,7 +171,7 @@ def grade_submissions(
     # Initialize grader
     print(f"3. Initializing {model_display} grader...")
     print("   ✓ Grader initialized")
-    if model not in ['gemini', 'o4-mini', 'o3-mini', 'o3', 'o1-mini', 'o1', 'gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo']:
+    if model not in _OPENAI_MODELS and model not in _CLAUDE_MODELS and model != 'gemini':
         print("   ⚠ Note: Local models may be slower than API calls")
     print()
     
@@ -425,71 +458,63 @@ def main():
 Examples:
   # Grade all submissions with Gemini (default)
   python main.py grade exam1-submission.csv
-  
-  # Grade with OpenAI o4-mini (recommended — reasoning model)
+
+  # Grade with Claude Sonnet (recommended — best balance)
+  python main.py grade exam1-submission.csv --model claude-sonnet
+
+  # Grade with Claude Sonnet (full model name)
+  python main.py grade exam1-submission.csv --model claude-sonnet-4-6
+
+  # Grade with Claude Opus (highest accuracy)
+  python main.py grade exam1-submission.csv --model claude-opus
+
+  # Grade with Claude Haiku (fastest, cheapest — good for large batches)
+  python main.py grade exam1-submission.csv --model claude-haiku
+
+  # Grade with OpenAI o4-mini (reasoning model)
   python main.py grade exam1-submission.csv --model o4-mini
 
-  # Grade with OpenAI o3-mini (previous reasoning model)
-  python main.py grade exam1-submission.csv --model o3-mini
-
-  # Grade with OpenAI GPT-4.1-mini (fast, non-reasoning)
+  # Grade with OpenAI GPT-4.1-mini
   python main.py grade exam1-submission.csv --model gpt-4.1-mini
 
-  # Grade with OpenAI GPT-4o
-  python main.py grade exam1-submission.csv --model gpt-4o
-  
   # Grade with DeepSeek-R1 (local Ollama model)
   python main.py grade exam1-submission.csv --model deepseek-r1
-  
+
   # Grade with Llama 3.1 8B (local Ollama model)
   python main.py grade exam1-submission.csv --model llama3.1:8b
-  
+
   # Generate overall statistics
-  python main.py stats output/openai-gpt-4-1-mini/grading_results.csv
-  
+  python main.py stats output/claude-claude-sonnet-4-6/grading_results.csv
+
   # Generate per-grader statistics
-  python main.py grader-stats output/openai-gpt-4-1-mini/grading_results.csv
-  
+  python main.py grader-stats output/claude-claude-sonnet-4-6/grading_results.csv
+
   # Generate visualizations
-  python main.py visualize output/openai-gpt-4-1-mini/grading_results.csv
-  
+  python main.py visualize output/claude-claude-sonnet-4-6/grading_results.csv
+
   # Grade first 50 submissions
-  python main.py grade exam1-submission.csv --max-students 50 --model gpt-4.1-mini
+  python main.py grade exam1-submission.csv --max-students 50 --model claude-sonnet
 
 Output Structure:
   output/
   ├── gemini/
-  │   ├── grading_results.csv
-  │   ├── statistics_report_gemini.txt
-  │   ├── per_grader_statistics_gemini.txt
-  │   ├── overall_distribution_gemini.png
-  │   ├── G1_distribution_gemini.png
-  │   └── ...
+  ├── claude-claude-sonnet-4-6/
+  ├── claude-claude-opus-4-6/
+  ├── claude-claude-haiku-4-5-20251001/
   ├── openai-gpt-4-1-mini/
-  │   └── ...
-  ├── openai-gpt-4o-mini/
-  │   └── ...
+  ├── openai-o4-mini/
   ├── llama3-1-8b/
-  │   └── ...
   └── deepseek-r1/
-      └── ...
 
 Environment Variables:
-  GEMINI_API_KEY          Your Google Gemini API key (required for Gemini model)
-  OPENAI_API_KEY          Your OpenAI API key (required for OpenAI models)
-
-OpenAI Setup:
-  1. Get API key from https://platform.openai.com/api-keys
-  2. Set environment variable:
-     export OPENAI_API_KEY='your-api-key-here'
-
-Ollama Setup (for local models):
-  brew install ollama
-  ollama serve
-  ollama pull llama3.1:8b
+  GEMINI_API_KEY       Your Google Gemini API key
+  OPENAI_API_KEY       Your OpenAI API key
+  ANTHROPIC_API_KEY    Your Anthropic API key (required for Claude models)
 
 Available Models:
-  OpenAI:  o4-mini (recommended, reasoning), o3-mini, o3, gpt-4.1-mini, gpt-4.1, gpt-4o-mini, gpt-4o
+  Claude:  claude-sonnet (recommended), claude-opus, claude-haiku
+           Full names: claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5-20251001
+  OpenAI:  o4-mini (reasoning), o3-mini, gpt-4.1-mini, gpt-4.1, gpt-4o-mini, gpt-4o
   Gemini:  gemini (uses gemini-2.5-flash)
   Ollama:  deepseek-r1, llama3.1:8b, llama3.2:3b, mistral, qwen2.5:7b
         """

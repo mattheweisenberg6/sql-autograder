@@ -46,6 +46,18 @@ _REASONING_MODELS = frozenset({"o1", "o1-mini", "o3", "o3-mini", "o4-mini"})
 
 
 @dataclass
+class ClaudeConfig:
+    """Configuration for Anthropic Claude API."""
+    api_key: str
+    model_name: str = "claude-sonnet-4-6"
+    max_tokens: int = 1500       # grading response is ~600-900 tokens; no thinking overhead
+    max_retries: int = 3
+    retry_delay: float = 0.5
+    timeout: float = 60.0
+    default_workers: int = 3     # conservative default — 30k TPM limit; raise if on higher tier
+
+
+@dataclass
 class GradingConfig:
     """Configuration for grading parameters."""
     questions: list[str] = field(default_factory=lambda: ['4.1', '4.2', '4.3', '4.4', '4.5'])
@@ -120,7 +132,34 @@ def get_openai_config(model_name: str = "gpt-4o-mini") -> OpenAIConfig:
     )
 
 
-def get_grading_config() -> GradingConfig:
+def get_claude_config(model_name: str = "claude-sonnet-4-6") -> ClaudeConfig:
+    """
+    Get Anthropic Claude API configuration from environment variables.
+
+    Args:
+        model_name: Model to use.
+            Recommended: claude-sonnet-4-6 (best balance of speed, cost, accuracy)
+            Accurate:    claude-opus-4-6   (highest quality, slower and pricier)
+            Fast/cheap:  claude-haiku-4-5-20251001 (great for large batches)
+
+    Returns:
+        ClaudeConfig: Configuration object with API settings
+
+    Raises:
+        ValueError: If ANTHROPIC_API_KEY environment variable is not set
+    """
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+
+    if not api_key:
+        raise ValueError(
+            "ANTHROPIC_API_KEY environment variable not set. "
+            "Please set it using: export ANTHROPIC_API_KEY='your-api-key'"
+        )
+
+    return ClaudeConfig(api_key=api_key, model_name=model_name)
+
+
+def get_grading_config() -> GradingConfig:    
     """
     Get grading configuration.
     
