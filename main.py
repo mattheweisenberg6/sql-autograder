@@ -18,6 +18,7 @@ from sqlAutograder import (
     OllamaGrader,
     OpenAIGrader,
     ClaudeGrader,
+    EnsembleGrader,
     SubmissionLoader,
     ResultsProcessor,
     GradingStatistics,
@@ -54,6 +55,11 @@ def get_grader(model: str):
     """
     # Resolve short aliases (claude-sonnet → claude-sonnet-4-6, etc.)
     model = _CLAUDE_ALIASES.get(model, model)
+
+    # Ensemble model
+    if model == 'ensemble':
+        grader = EnsembleGrader()
+        return grader, "Ensemble (Gemini + o4-mini + Claude, median vote)"
 
     # Claude models
     if model in _CLAUDE_MODELS:
@@ -105,7 +111,9 @@ def grade_submissions(
     """
     # Create output directory organized by model name
     model = _CLAUDE_ALIASES.get(model, model)  # resolve aliases before suffix
-    if model in _OPENAI_MODELS:
+    if model == 'ensemble':
+        model_suffix = 'ensemble'
+    elif model in _OPENAI_MODELS:
         model_suffix = f"openai-{model.replace('.', '-')}"
     elif model in _CLAUDE_MODELS:
         model_suffix = f"claude-{model.replace('.', '-').replace(':', '-')}"
@@ -581,6 +589,34 @@ Available Models:
         '--output-dir',
         help='Output directory for plots (default: same directory as input CSV)'
     )
+
+    # Compare command
+    cmp_parser = subparsers.add_parser(
+        'compare', help='Compare ensemble vs single-model accuracy'
+    )
+    cmp_group = cmp_parser.add_mutually_exclusive_group(required=True)
+    cmp_group.add_argument(
+        '--models', nargs='+',
+        choices=['gemini', 'o4-mini', 'claude', 'ensemble'],
+        help='Model shortnames to compare (uses default output/ subfolders)'
+    )
+    cmp_group.add_argument(
+        '--files', nargs='+',
+        help='Explicit paths to grading_results.csv files'
+    )
+    cmp_parser.add_argument(
+        '--labels', nargs='+',
+        help='Display labels when using --files'
+    )
+    cmp_parser.add_argument(
+        '--output-dir', default='output/comparison',
+        help='Directory for report and charts (default: output/comparison)'
+    )
+    cmp_parser.add_argument(
+        '--no-plots', action='store_true',
+        help='Skip chart generation'
+    )
+
     args = parser.parse_args()
     
     if args.command == 'grade':
@@ -606,6 +642,25 @@ Available Models:
     elif args.command == 'visualize':
         success = generate_visualizations(args.results_csv, args.output_dir)
         exit(0 if success else 1)
+
+    elif args.command == 'compare':
+        # Delegate entirely to ensemble_comparison module
+        import sys
+        from sqlAutograder import ensemble_comparison
+        # Reconstruct argv for ensemble_comparison.main()
+        cmp_args = ['ensemble_comparison.py']
+        if args.models:
+            cmp_args += ['--models'] + args.models
+        else:
+            cmp_args += ['--files'] + args.files
+            if args.labels:
+                cmp_args += ['--labels'] + args.labels
+        cmp_args += ['--output-dir', args.output_dir]
+        if args.no_plots:
+            cmp_args.append('--no-plots')
+        sys.argv = cmp_args
+        ensemble_comparison.main()
+        exit(0)
     
     else:
         parser.print_help()

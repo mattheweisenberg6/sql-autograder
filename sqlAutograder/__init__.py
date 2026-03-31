@@ -7,6 +7,8 @@ from .grader import GeminiGrader
 from .ollama_grader import OllamaGrader
 from .openai_grader import OpenAIGrader
 from .claude_grader import ClaudeGrader
+from .ensemble_grader import EnsembleGrader
+from . import ensemble_comparison
 from .data_loader import SubmissionLoader
 from .results import ResultsProcessor
 from .statistics import GradingStatistics
@@ -25,6 +27,7 @@ __all__ = [
     'OllamaGrader',
     'OpenAIGrader',
     'ClaudeGrader',
+    'EnsembleGrader',
     'SubmissionLoader',
     'ResultsProcessor',
     'GradingStatistics',
